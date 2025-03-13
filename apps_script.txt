@@ -1,0 +1,248 @@
+function doGet(e) {
+  try {
+    var action = e.parameter.action;
+    var ss = SpreadsheetApp.openById("1z5o3P6nxcYMRz23EYUnjkLJUAKpOIkpe7-YI11mt4Ps");
+
+    if (action == "get_spk") {
+      return getSPK(ss);
+    } 
+    if (action == "get_DatabaseSP") {
+      return getDatabaseSP(ss);
+    } 
+    return errorResponse("Invalid action");
+  } catch (error) {
+    return errorResponse(error.message);
+  }
+}
+
+function doPost(e) {
+  try {
+    var params = JSON.parse(e.postData.contents);
+    var action = params.action;
+    var ss = SpreadsheetApp.openById("1z5o3P6nxcYMRz23EYUnjkLJUAKpOIkpe7-YI11mt4Ps");
+
+    if (action == "add_data") {
+      var response = JSON.parse(addData(ss, params).getContent());
+
+      if (response.status == "success") {
+        var sparepartSheet = ss.getSheetByName("SPAREPART");
+        var newID = response.data.new_id; 
+        Logger.log("Menggunakan newID: " + newID);
+        return addDataToSparepart(sparepartSheet, params, newID, ss);
+      }
+
+      return errorResponse(response.error);
+    }
+
+    if (action == "add_data_to_sparepart") {
+      var sparepartSheet = ss.getSheetByName("SPAREPART");
+      if (!sparepartSheet) return errorResponse("Sheet SPAREPART not found");
+
+      return addDataToSparepart(sparepartSheet, params, params.new_id, ss);
+    }
+
+    return errorResponse("Invalid action");
+  } catch (error) {
+    return errorResponse(error.message);
+  }
+}
+
+
+function addData(ss, params) {
+  try {
+    if (!ss) return errorResponse("Spreadsheet object is undefined");
+
+    var sheet = ss.getSheetByName("ALL");
+    if (!sheet) return errorResponse("Sheet ALL not found");
+
+    Logger.log("Data yang diterima: " + JSON.stringify(params));
+
+    if (!params.Tanggal || !params.Mulai || !params.Selesai) {
+      return errorResponse("Missing required date/time parameters");
+    }
+
+    var lastRow = sheet.getLastRow();
+    var newID = lastRow >= 2 ? sheet.getRange(lastRow, 1).getValue() + 1 : 1;
+
+    var formattedTanggal = formatDate(params.Tanggal);
+    var mulai = convertToJakartaTime(params.Mulai);
+    var selesai = convertToJakartaTime(params.Selesai);
+
+    var deskripsiArray = Array.isArray(params.Deskripsi) ? params.Deskripsi : [params.Deskripsi];
+    var quantityArray = Array.isArray(params.Quantity) 
+      ? params.Quantity.map(q => q.toString().trim())  
+      : [params.Quantity.toString().trim()];
+
+    var deskripsiJoin = deskripsiArray.join(", ");
+    var quantityJoin = quantityArray.join(", ");  
+
+    Logger.log("Final Quantity Array: " + JSON.stringify(quantityArray)); 
+    Logger.log("Final Quantity Join: " + quantityJoin); 
+
+
+    sheet.appendRow([
+      newID, params.BU, params.Line, params.Produk, params.Mesin,
+      formattedTanggal, mulai, selesai, params.Masalah,
+      params.Tindakan, deskripsiJoin, quantityJoin, params.PIC
+    ]);
+
+    return successResponse({ "new_id": newID });
+  
+  } catch (error) {
+    Logger.log("Error in addData: " + error.message);
+    return errorResponse(error.message);
+  }
+}
+
+function getUOMFromDatabaseSP(ss, deskripsiList) {
+  if (!ss) {
+    Logger.log("Spreadsheet object is undefined!");
+    return {};
+  }
+
+  var sheet = ss.getSheetByName("Database_SP");
+  if (!sheet) {
+    Logger.log("Sheet Database_SP not found!");
+    return {};
+  }
+
+  var data = sheet.getDataRange().getValues();
+  Logger.log("Data dari Database_SP: " + JSON.stringify(data));
+
+  var uomMap = {};
+
+  for (var i = 1; i < data.length; i++) { 
+    var deskripsi = data[i][1] ? data[i][1].toString().trim() : "";
+    var uom = data[i][2] ? data[i][2].toString().trim() : "";
+
+    if (deskripsi) {
+      uomMap[deskripsi] = uom; 
+    }
+  }
+
+  var uomList = deskripsiList.map(d => uomMap[d] || ""); 
+  Logger.log("UOM List yang dikembalikan: " + JSON.stringify(uomList));
+
+  return uomList;
+}
+
+
+function addDataToSparepart(sheet, params, newID, ss) {
+  try {
+    if (!sheet) return errorResponse("Sheet SPAREPART not found");
+
+    Logger.log("Menambahkan data ke sheet SPAREPART...");
+    Logger.log("Params sebelum diproses: " + JSON.stringify(params));
+
+    var deskripsiArray = Array.isArray(params.Deskripsi) ? params.Deskripsi : params.Deskripsi.split(",").map(s => s.trim());
+    var quantityArray = Array.isArray(params.Quantity) ? params.Quantity : params.Quantity.split(",").map(s => s.trim());
+
+    var uomArray = getUOMFromDatabaseSP(ss, deskripsiArray);
+
+    Logger.log("Deskripsi: " + JSON.stringify(deskripsiArray));
+    Logger.log("Quantity: " + JSON.stringify(quantityArray));
+    Logger.log("UOM: " + JSON.stringify(uomArray));
+
+    var maxLength = Math.max(deskripsiArray.length, quantityArray.length, uomArray.length);
+
+    for (var i = 0; i < maxLength; i++) {
+      var deskripsi = deskripsiArray[i] || "";
+      var quantity = quantityArray[i] || "";
+      var uom = uomArray[i] || "";
+
+      var newRow = [newID, deskripsi, quantity, uom];
+
+      Logger.log("Menambahkan baris: " + JSON.stringify(newRow));
+      sheet.appendRow(newRow);
+    }
+
+    return successResponse("Sparepart data added successfully");
+  } catch (error) {
+    Logger.log("Error adding sparepart data: " + error.message);
+    return errorResponse(error.message);
+  }
+}
+
+
+function getSPK(ss) {
+  try {
+    var sheet = ss.getSheetByName("SPK");
+    if (!sheet) return errorResponse("Sheet SPK not found");
+
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return successResponse([]);
+
+    var headers = data[0];
+    var formattedData = [];
+
+    for (var i = 1; i < data.length; i++) {
+      var row = {};
+      for (var j = 0; j < headers.length; j++) {
+        row[headers[j]] = data[i][j];
+      }
+      formattedData.push(row);
+    }
+
+    return successResponse(formattedData);
+  } catch (error) {
+    Logger.log(error.message);
+    return errorResponse(error.message);
+  }
+}
+
+function getDatabaseSP(ss) {
+  try {
+    var sheet = ss.getSheetByName("Database_SP");
+    if (!sheet) return errorResponse("Sheet Database_SP not found");
+
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return successResponse([]); 
+
+    var headers = data[0].map(header => header.toString().trim()); 
+    var formattedData = [];
+
+    for (var i = 1; i < data.length; i++) {
+      var row = {};
+      for (var j = 0; j < headers.length; j++) {
+        row[headers[j]] = data[i][j] !== undefined ? data[i][j] : ""; 
+      }
+      formattedData.push(row);
+    }
+
+    return successResponse(formattedData);
+  } catch (error) {
+    Logger.log("Error in getDatabaseSP: " + error.message);
+    return errorResponse(error.message);
+  }
+}
+
+function convertToJakartaTime(timeString) {
+  try {
+    var timeParts = timeString.split(":");
+    if (timeParts.length !== 2) throw new Error("Invalid time format");
+
+    var date = new Date();
+    date.setHours(parseInt(timeParts[0]), parseInt(timeParts[1]), 0);
+    return Utilities.formatDate(date, "GMT+7", "HH:mm");
+  } catch (error) {
+    return "00:00"; 
+  }
+}
+
+function formatDate(dateString) {
+  var date = new Date(dateString);
+  if (isNaN(date.getTime())) {
+    throw new Error("Invalid date format");
+  }
+  return Utilities.formatDate(date, "GMT+7", "dd-MMM-yy");
+}
+
+function successResponse(data) {
+  return ContentService.createTextOutput(JSON.stringify({ status: "success", data: data }))
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function errorResponse(message) {
+  return ContentService.createTextOutput(JSON.stringify({ status: "error", error: message }))
+    .setMimeType(ContentService.MimeType.JSON);
+}
